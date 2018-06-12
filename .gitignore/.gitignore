@@ -1,0 +1,337 @@
+"""
+*********************************************
+ORGANIZATION: 
+PROJECT     : PRESS ANGLE DISPLAY
+FILENAME    : PressAngle.py
+MASTER FILE : //shop/SpecialProjects/python
+DEVELOPER   : Steve Jankowski
+Date: 06/12/18
+
+The following file has been developed to give the operator
+the crankshaft angle so they can jog to Top Dead Center
+in the event of MAUNAL Operation.
+
+When the machine is placed in Manual the position
+readout is activated for a selected interval.
+
+When the press is cycled to it's TDC (Top Dead Center) 
+the reset button can be held to register the position
+as zero. All future angle displays are referenced from
+that position.
+
+There is a provision to reverse the readout direction.
+See the ".ini" file.
+
+*********************************************
+"""
+import os
+import smbus
+import time
+import math
+import RPi.GPIO as GPIO
+import sys
+from subprocess import call
+GPIO.setmode(GPIO.BCM)  
+
+#Establish GLOBAL variables.
+IniFile = "/home/pi/CrankAngle/pressAngle.ini"
+firstPass = True
+startButton = 1
+resetButton = 1
+powerOn = 1
+lifePin =1
+offsetAngle = 0
+dwellInterval = 0
+resetTrigger = 0
+ON_Time = 0
+# Get I2C bus
+bus = smbus.SMBus(1)
+
+
+def setupGen():
+    #amber = LED(readIni("lifePin"))
+    global startButton
+    startButton = int(readIni("startPin"))
+    global resetButton
+    resetButton = int(readIni("resetPin"))
+    global powerOn
+    powerOn = int(readIni("onOffPin"))
+    global offsetAngle
+    offsetAngle = float(readIni("Offset Angle"))
+    global dwellInterval
+    dwellInterval = float(readIni("Cycle Dwell"))
+    global resetTrigger
+    resetTrigger = float(readIni("resetHold"))
+    global SOL_Pin
+    SOL_Pin = float(readIni("lifePin"))
+    global ON_Time
+    ON_Time = float(readIni("ON_Time"))
+    global reverseRotation
+    reverseRotation = int(readIni("reverseRotation"))
+    if reverseRotation >= 1:
+        reverseRotation = 1
+    else:
+        reverseRotation = 0
+    global firstPass
+    firstPass = False
+	
+def getAngle():
+# A1332 address, 0x0C(12)
+# Read data back, 2 bytes
+# raw_adc MSB, raw_adc LSB
+    data0 = bus.read_byte(0x0C)
+    data1 = bus.read_byte(0x0C)
+
+# Checking valid data
+    while (data0 == 0) and (data1 == 0) :
+            data0 = bus.read_byte(0x0C)
+            data1 = bus.read_byte(0x0C)
+
+# Convert the data to 12-bits
+    raw_adc = (data0 & 0x0F) * 256.0 + data1
+    angle = (raw_adc / 4096.0) * 360.0
+
+# Output data to screen
+    #print "Magnetic Angle : %.2f" %angle
+    return angle
+	
+
+def readIni(searchWord):
+    #print("Looking for: "+searchWord)
+    try:
+        with open(IniFile,"r") as F:
+            pass
+            for line in F:
+            #print(line)
+             if searchWord in line:
+                #print("Found "+searchWord)
+                return line[(line.find("=")+1):len(line)]
+    except IOError as err:
+        errorDisp(1,True)
+				
+def setIni(searchWord,rval):
+    #print("Looking for: "+searchWord)
+    lines = []
+    with open(IniFile,"r") as Fr:
+        for line in Fr.readlines():
+            if searchWord in line:
+                #print("Found "+searchWord)
+                lines.append(line.replace(line[(line.find("=")+1):len(line)-1], str(rval)))
+                #print "****************" +(line)
+            else:
+                #print(line)
+                lines.append(line)
+                
+	with open(IniFile,"w") as Fw:
+            Fw.writelines(lines)
+		
+def Start_Routine(channel):  
+    #print "falling edge detected on Start Button"
+    runLimit=time.time()+ON_Time
+    try:
+        display(True)
+    except IOError as err:
+        errorDisp(2,True)
+
+
+    while (time.time() <= runLimit):
+     try:
+        angle = getAngle()
+        print"Original Angle - " + str(angle)
+        #print 'Offset Value = ' + str(offsetAngle)
+        angle = (angle - offsetAngle)
+        #print 'subtotal1 - ' + str(angle)
+        if reverseRotation:
+            angle = 360-angle
+            #print 'subtotal2 - ' + str(angle)
+        if angle > 360 or angle < 0:
+            #print 'adjust'
+            angle = int(abs(abs(angle) - 360))
+        #print"Adjusted Angle - " + str(angle)
+            # Reverse display direction if flag is set
+        print('ShowPos'+str(angle))
+        showPos(angle)
+        time.sleep(dwellInterval)
+     except IOError as err:
+        errorDisp(3,True)
+         
+
+    display(False)
+    
+def display(disp):
+    if disp:
+      try:
+    # AS1115 address, 0x00(00)
+    # Select Shutdown register, 0x0C(12)
+    #		0x01(01)	Normal Operation, Reset Feature Register to Default Settings
+        bus.write_byte_data(0x00, 0x0C, 0x01)
+    # AS1115 address, 0x00(00)
+# Select Intensity Control Register, 0x0A(10)
+#		0x80(128)	Duty cycle = 1/16
+        bus.write_byte_data(0x00, 0x0A, 0x80)
+# AS1115 address, 0x00(00)
+# Select Feature Register, 0x0E(14)
+#		0x04(04)	Enable HEX decoding
+        bus.write_byte_data(0x00, 0x0E, 0x04)
+# AS1115 address, 0x00(00)
+# Select Scan-limit Register, 0x0B(11)
+#		0x02(02)	Display digits 0-2
+        bus.write_byte_data(0x00, 0x0B, 0x02)
+# AS1115 address, 0x00(00)
+# Select Decode-enable Register, 0x09(09)
+#		0x07(07)	Set all digits to font decode
+        bus.write_byte_data(0x00, 0x09, 0x07)
+        # Select Shutdown register, 0x0C(12)
+        #		0x01(01)	Normal Operation, Reset Feature Register to Default Settings
+        bus.write_byte_data(0x00, 0x0C, 0x01)
+        
+        #showPos(334)
+        #time.sleep(5)
+        #print("Display")
+
+        #display(False)
+
+      except IOError as err:
+        print('some error')
+        errorDisp(2,True)
+    else:
+        # Select Shutdown register, 0x0C(12)
+        #		0x01(01)	Normal Operation, Reset Feature Register to Default Settings
+        bus.write_byte_data(0x00, 0x0C, 0x00)
+        #print("No Display")
+
+
+    
+def showPos(angle):
+    #print("Angle Show= " + str(angle))
+    bus.write_byte_data(0x00, 0x0C, 0x01)
+    
+    for digit in range(3):
+        dPosition=2-digit
+	dig1=int(angle/pow(10,dPosition))
+	angle=angle-(dig1*pow(10,dPosition))
+	#print "Position: %d /Multiplier: %d" %(dPosition, int(pow(10,dPosition)))
+    	#print ("digit: %d / Angle remaining: %d " %(dig1,angle))
+    	# Write data on the digits
+    	bus.write_byte_data(0x00, digit+1, dig1)
+
+    
+def errorDisp(errorCode,sysExit):
+        call('clear',shell=True)
+        print
+        print
+        print "#" *45
+        if errorCode == 1:
+            ErrorDisp =  ('System INI file: '+ IniFile + ' does not exist!',)
+
+        if errorCode == 2:
+            ErrorDisp =  ('I2C error!  Check the I2C connection to the','position readout screen','Likely problem: cable disconnected.')
+            
+        if errorCode == 3:
+            ErrorDisp = ('I2C error!  Check the I2C connection to the','Magnetic Dopler reciever','Likely problem: cable disconnected.','Also Check that power is connected to the','I2C extension modules.')
+  
+        if errorCode == 4:
+            ErrorDisp = ('RPi Shutting Down','See you tomorrow','Good-bye')
+            
+        for line in ErrorDisp:
+            print line
+        print "#" *45
+        if sysExit:
+            sys.exit()
+
+
+def Reset_Routine(channel):  
+    print "falling edge detected on Angle Reset Button" + str(channel)
+    global startTime
+    if GPIO.input(resetButton) == 1:
+        print 'elapsed - '+ str(time.time()-startTime)
+        if time.time() >= startTime + 4 :
+          try:
+            angle = getAngle()
+            print 'Store This Pos: ' + str(angle)
+            setIni("Offset Angle",angle)
+            global offsetAngle
+            offsetAngle = angle
+          except IOError as err:
+            errorDisp(3,True)
+
+            
+    if GPIO.input(resetButton) == 0:
+        startTime = time.time()
+ 	
+def ShutDown(channel):  
+    #print "falling edge detected on Power Monitor"
+    errorDisp(4,False)
+    time.sleep(4)
+    call("sudo poweroff",shell=True)
+
+#Handler forCTRL-C
+import signal
+def signal_handler(signal, frame):
+    print('->signal_handler: You pressed CTRL+C!')
+    sys.exit(0)
+
+def main():
+        if firstPass:
+            #print 'First Pass'
+            setupGen()
+            display(True)
+	# Setup start button
+	#print ("Start Button SG = " + str(startButton))
+	GPIO.setup(startButton, GPIO.IN, pull_up_down=GPIO.PUD_UP) 
+	# Setup Angle Reset Button 
+	#print ("Reset Button SG = " + str(resetButton))
+	GPIO.setup(resetButton, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+	# Setup Power Monitoring Input
+	GPIO.setup(powerOn, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+	
+	signal.signal(signal.SIGINT, signal_handler)
+	
+	GPIO.add_event_detect(startButton, GPIO.FALLING, callback=Start_Routine, bouncetime=300)  
+	GPIO.add_event_detect(resetButton, GPIO.BOTH, callback=Reset_Routine, bouncetime=300)  
+	GPIO.add_event_detect(powerOn, GPIO.FALLING, callback=ShutDown, bouncetime=300)  
+        
+            
+        while True:
+            pass
+
+	
+main()
+
+This file is the '.ini'file that loads in all the various set points.  At some future point we have plac
+ns to store useful IOT data to leverage some of the power we're installing.
+
+
+Press Number = 5
+Offset Angle =132.1875
+
+Set the dwell time for the display interations sec
+Cycle Dwell = 0.01
+
+Set the display ON time (seconds)
+ON_Time = 10
+
+set the pin that the power monitor is connected
+onOffPin =13
+
+set the pin that the reset button is connected
+resetPin = 12
+
+set the pin that the power output is connected
+outputPin = 25
+
+set the hold time for the reset button (seconds)
+reset is ignored till time elapses
+resetHold = 4
+
+set the pin that the start input is connected
+startPin = 26
+
+define the pin that drives the sign of life LED
+lifePin = 17
+
+reverse the rotation direction 0=normal 1=reverse
+reverseRotation = 0
+
+End)
+This is the content to write into file
